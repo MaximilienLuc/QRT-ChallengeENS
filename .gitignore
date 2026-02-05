@@ -1,0 +1,4 @@
+Data/
+*.csv
+.venv/
+.DS_Store
