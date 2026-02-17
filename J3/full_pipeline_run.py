@@ -61,19 +61,31 @@ def run():
         gen.fit(X, y)
         X_part = gen.transform(X)
         X_transformed = pd.concat([X_transformed, X_part], axis=1)
-    X_transformed = X_transformed.fillna(0)
+    # X_transformed = X_transformed.fillna(0) # Removed to let LightGBM handle NaNs natively
 
     print("Generating Features for Test Set...")
     X_test_transformed = pd.DataFrame(index=X_test.index)
     for gen in generators:
         X_part = gen.transform(X_test)
         X_test_transformed = pd.concat([X_test_transformed, X_part], axis=1)
-    X_test_transformed = X_test_transformed.fillna(0)
+    # X_test_transformed = X_test_transformed.fillna(0) # Removed to let LightGBM handle NaNs natively
 
     print(f"Generated Features: {X_transformed.shape[1]}")
+    
+    # Remove duplicate columns
+    X_transformed = X_transformed.loc[:, ~X_transformed.columns.duplicated()]
+    X_test_transformed = X_test_transformed.loc[:, ~X_test_transformed.columns.duplicated()]
 
     print("Step 3: Feature Selection...")
     evaluator = FeatureEvaluator(cv=3)
+    print("Checking for Drifting Features (Adversarial Validation)...")
+    drifting_features = evaluator.check_drift(X_transformed, X_test_transformed, threshold=0.70)
+    print(f"Dropping {len(drifting_features)} drifting features.")
+    
+    # Drop drifting features first
+    X_transformed = X_transformed.drop(columns=drifting_features)
+    X_test_transformed = X_test_transformed.drop(columns=drifting_features)
+
     high_corr_features = evaluator.check_correlation(X_transformed, threshold=0.98)
     print(f"Dropping {len(high_corr_features)} highly correlated features.")
     

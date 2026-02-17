@@ -84,11 +84,58 @@ def run():
         X_part = gen.transform(X)
         X_transformed = pd.concat([X_transformed, X_part], axis=1)
 
-    X_transformed = X_transformed.fillna(0)
+    # X_transformed = X_transformed.fillna(0) # Removed to let LightGBM handle NaNs natively
     print(f"Generated Features: {X_transformed.shape[1]}")
+    
+    # Remove duplicate columns
+    X_transformed = X_transformed.loc[:, ~X_transformed.columns.duplicated()]
 
     print("Step 4: Selection & Evaluation...")
     evaluator = FeatureEvaluator(cv=3)
+
+    # 0. Check Drift
+    print("Checking for Drifting Features...")
+    # For sample run, we split X for drift check simulation or use X_test if available (but X_test is not loaded here usually? Ah, we use X_train sample)
+    # The sample run only loads X_train_sample. It doesn't load X_test.
+    # So we can't really do drift check here unless we load X_test.
+    # Let's skip drift check for run_pipeline.py based on sample data unless we load X_test full.
+    # Actually prompt says "Verify with sample data". Better to load X_test header/sample if possible.
+    # Let's mock it or just check correlation.
+    
+    # NOTE: To properly verify drift check, we need Test data.
+    # Let's try to load X_test.csv if it exists (it does).
+    try:
+        X_test_real = pd.read_csv('Data/X_test.csv')
+        # Generate features for X_test_real (subset or full? Full might be slow)
+        # Let's take a sample of X_test equal to X_train size for quick check
+        X_test_sample = X_test_real.sample(n=min(len(X), 10000), random_state=42).drop(columns=['ROW_ID'])
+        
+        # Reset index to ensure alignment and uniqueness
+        X_test_sample = X_test_sample.reset_index(drop=True)
+        
+        print("Generating features for Test Sample for Drift Check...")
+        X_test_transformed_sample = pd.DataFrame(index=X_test_sample.index)
+        for gen in generators:
+            # Debugging
+            # print(f"Gen: {gen}")
+            X_part = gen.transform(X_test_sample)
+            X_part = X_part.reset_index(drop=True)
+            
+            # Ensure target has unique index
+            X_test_transformed_sample = X_test_transformed_sample.reset_index(drop=True)
+            
+            # print(f"Part shape: {X_part.shape}, Transformed shape: {X_test_transformed_sample.shape}")
+            X_test_transformed_sample = pd.concat([X_test_transformed_sample, X_part], axis=1)
+        
+        # Remove duplicates
+        X_test_transformed_sample = X_test_transformed_sample.loc[:, ~X_test_transformed_sample.columns.duplicated()]
+
+        drifting_features = evaluator.check_drift(X_transformed, X_test_transformed_sample, threshold=0.60) # Lower threshold for sample
+        print(f"Dropping {len(drifting_features)} drifting features.")
+        X_transformed = X_transformed.drop(columns=drifting_features)
+
+    except Exception as e:
+        print(f"Could not run drift check on sample: {e}")
 
     # 1. Check Correlation
     high_corr_features = evaluator.check_correlation(X_transformed, threshold=0.95)

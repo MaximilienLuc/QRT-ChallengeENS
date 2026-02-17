@@ -43,6 +43,64 @@ class FeatureEvaluator:
         to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
         return to_drop
 
+    def check_drift(self, X_train, X_test, threshold=0.70):
+        """
+        Adversarial Validation to detect drifting features.
+        Returns list of features to drop.
+        """
+        import lightgbm as lgb
+        from sklearn.metrics import roc_auc_score
+        
+        # 1. Label Train=0, Test=1
+        X_train['is_test'] = 0
+        X_test['is_test'] = 1
+        
+        # 2. Combine
+        X_adv = pd.concat([X_train, X_test], axis=0)
+        y_adv = X_adv['is_test']
+        X_adv = X_adv.drop(columns=['is_test'])
+        
+        # Clean up original DFs
+        X_train.drop(columns=['is_test'], inplace=True)
+        X_test.drop(columns=['is_test'], inplace=True)
+        
+        # 3. Train Classifier
+        # Simple/fast params for drift detection
+        clf = lgb.LGBMClassifier(
+            n_estimators=50,
+            max_depth=5,
+            random_state=42,
+            n_jobs=-1,
+            verbosity=-1
+        )
+        
+        # Cross-val to get stable AUC
+        cv_scores = cross_val_score(clf, X_adv, y_adv, cv=3, scoring='roc_auc')
+        mean_auc = cv_scores.mean()
+        
+        print(f"Adversarial Validation AUC: {mean_auc:.4f}")
+        
+        to_drop = []
+        if mean_auc > threshold:
+            print(f"Drift detected (AUC > {threshold}). Identifying culprits...")
+            
+            # Fit on full data for importance
+            clf.fit(X_adv, y_adv)
+            
+            importances = pd.DataFrame({
+                'feature': X_adv.columns,
+                'importance': clf.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
+            # Heuristic: Drop top contributing features until AUC drops?
+            # Or just drop top N that make up 50% of importance?
+            # Here: Drop top 20 features for now as requested user strategy "remove top 20"
+            to_drop = importances.head(20)['feature'].tolist()
+            
+            print(f"Top 5 drifting features: {to_drop[:5]}")
+            
+        return to_drop
+
 def plot_feature_importance(importances, top_n=20, save_path=None):
     plt.figure(figsize=(10, 8))
     sns.barplot(x="importance", y="feature", data=importances.head(top_n))
