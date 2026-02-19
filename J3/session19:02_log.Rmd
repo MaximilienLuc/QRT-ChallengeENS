@@ -1,0 +1,224 @@
+---
+title: "QRT Challenge — Session Log"
+author: "Maximilien"
+date: "2026-02-19"
+output: html_document
+---
+
+# Session Log — Exploration Modélisation & Feature Engineering
+
+## 1. Régression vs Classification
+
+**Objectif** : Tester si une approche régression (prédire le target continu, puis binariser) bat la classification directe.
+
+### 1.1 Pipeline Régression (`reg_pipeline.py`)
+
+Trois modèles testés sur le sample (158K lignes) :
+
+| Modèle | Accuracy | Observations |
+|--------|----------|-------------|
+| Ridge Regression | 0.5000 | Aucun signal capturé |
+| Random Forest Regressor | 0.5000 | Aucun signal capturé |
+| LGBM Regressor (Huber) | 0.5382 | Signal marginal, threshold optimal ≈ 0 |
+
+**Conclusion** : Seul LGBM arrive à extraire un signal faible. Ridge et RF échouent complètement en régression.
+
+### 1.2 Comparaison LGBM Regressor vs Classifier (`compare_reg_vs_clf.py`)
+
+Comparaison avec les mêmes hyperparamètres, 5-fold CV OOF :
+
+| Modèle | Accuracy |
+|--------|----------|
+| LGBM Regressor | 0.5382 |
+| LGBM Classifier | 0.5378 |
+
+- **Agreement** : 69.34% — les modèles prédisent la même chose ~70% du temps
+- Sur les désaccords, chaque modèle a raison ~50% du temps → pas de complémentarité
+
+### 1.3 Stacking Regressor + Classifier (`stacking_reg_clf.py`)
+
+| Stratégie | Accuracy |
+|-----------|----------|
+| Regressor seul | 0.5382 |
+| Classifier seul | 0.5378 |
+| Simple Average | ≤ 0.5384 |
+| Majority Vote | ≤ 0.5382 |
+| **Weighted Average (w_reg=0.05)** | **0.5384** |
+| LogReg Stacking (C=0.01→10) | ≤ 0.5382 |
+
+**Conclusion** : Le stacking n'apporte quasi rien (+0.0002). Le méta-learner favorise le classifier. Les deux modèles captent la même information (ou le même bruit).
+
+---
+
+## 2. Feature Engineering Avancé
+
+**Objectif** : Ajouter de nouvelles features pour améliorer le signal.
+
+### 2.1 Nouveaux Generators Implémentés (`feature_engineering.py`)
+
+5 nouveaux generators ajoutés :
+
+1. **HigherOrderStatsGenerator** — Skewness et Kurtosis des returns (windows 5, 10, 20) → 6 features
+2. **SignFlipGenerator** — Comptage de retournements de signe, streaks, ratio positif/négatif → 9 features
+3. **VolumeFlowGenerator** — Imbalance de volume, VWAP proxy, accélération de volume → 9 features
+4. **CrossLagCorrelationGenerator** — Corrélation croisée RET↔VOL, autocorrélation RET → 4 features
+5. **AllocationFeatureGenerator** — Stats groupées par ALLOCATION (colonne inutilisée) → 4 features
+
+### 2.2 Évaluation Incrémentale (`test_new_features.py`)
+
+Test de chaque generator individuellement (LGBM 3-fold CV, sample 158K) :
+
+| Generator | #Features Total | Accuracy | Delta vs Baseline |
+|-----------|:---------:|:--------:|:--------:|
+| **Baseline** | **86** | **0.5394** | **—** |
+| + HigherOrderStats | 92 | 0.5391 | -0.0003 |
+| + SignFlip | 95 | 0.5387 | -0.0007 |
+| + VolumeFlow | 95 | 0.5385 | -0.0009 |
+| + CrossLagCorr | 90 | 0.5385 | -0.0010 |
+| + Allocation | 90 | 0.5388 | -0.0006 |
+| **ALL COMBINED** | **118** | **0.5370** | **-0.0025** |
+
+**Conclusion** : Aucun generator n'améliore le score. Combinés, ils le dégradent de -0.25%. Le LGBM capture déjà implicitement ces patterns via des splits sur les features brutes. Ajouter des features dérivées ajoute du bruit et favorise l'overfitting.
+
+---
+
+## 3. Purged K-Fold — Détection de Leakage Temporel
+
+**Objectif** : Vérifier si le Standard KFold crée du leakage temporel via la colonne `TS`.
+
+### 3.1 Structure Temporelle des Données
+
+- **2522 dates uniques** (identifiées via `TS = DATE_XXXX`)
+- ~63 samples par date en moyenne
+- Les données ne sont PAS triées par date
+
+### 3.2 Comparaison 3 Stratégies de CV (`test_purged_kfold.py`)
+
+| Méthode | Train Acc | Val Acc | Gap (overfit) |
+|---------|:---------:|:-------:|:---:|
+| Standard Shuffled KFold | 0.7773 | **0.5411** | 0.236 |
+| Purged KFold (contiguous, 2% gap) | 0.7843 | **0.5168** | 0.268 |
+| Walk-Forward Purged | 0.8391 | **0.5131** | 0.326 |
+
+**Conclusions majeures** :
+
+1. **Le Standard KFold surestime de +2.4%** par rapport au Purged KFold → **temporal leakage confirmé**
+2. Le vrai score est ~51.3-51.7%, pas 54%
+3. **L'overfitting est massif** : train ~77% vs val ~52% (gap de 25%+)
+4. Le Walk-Forward montre le pattern classique : le premier fold (petit train set) overfit le plus (92.5% train)
+
+---
+
+## 4. Optuna + Purged K-Fold — Anti-Overfit
+
+**Objectif** : Ré-optimiser les hyperparamètres avec le Purged KFold pour lutter contre l'overfitting.
+
+### 4.1 Première Optuna (Sample, 158K, `optuna_purged.py`)
+
+Search space anti-overfit : `num_leaves` ≤ 64, `max_depth` ≤ 8, `min_child_samples` ≥ 30, forte régularisation L1/L2.
+
+| Métrique | Ancien params | Optimisé (trial #28) |
+|----------|:----:|:-----:|
+| Val accuracy (Purged) | 0.5170 | **0.5219** (+0.005) |
+| Train accuracy | 0.7689 | **0.5326** |
+| Gap | **0.2519** | **0.0107** |
+
+**Best params** : `num_leaves=19, max_depth=3, min_child_samples=182, colsample_bytree=0.34, learning_rate=0.011, reg_alpha=0.40, reg_lambda=0.75`
+
+Le gap passe de **25% → 1%** — le modèle ne surfit plus.
+
+### 4.2 Première Soumission (`submission_lgbm_purged_antioverfit.csv`)
+
+- **Problème** : 61.2% de prédictions positives (labels sont ~50/50)
+- Score plateforme : **0.5082**
+
+---
+
+## 5. Audit Pipeline — Problèmes Identifiés
+
+### 5.1 Problèmes Trouvés
+
+| Problème | Impact | Action |
+|----------|--------|--------|
+| `InteractionGenerator` redondant avec `ShortTermInteractionGenerator` | Features dupliquées (`RET_x_VOL_i`) | **Supprimé** |
+| `GroupedFeatureGenerator` utilise stats de groupe calculées sur tout le train | Leakage temporel subtil en CV | **Supprimé** |
+| Drift threshold 0.60 (sample) vs 0.70 (full) | Optuna optimisé sur un jeu de features différent | **Fixé à 0.60** |
+| Soumission en binaire 0/1 alors que probas biaisées à 61% | Score sous-optimal | **Seuil calibré** |
+
+### 5.2 Format de Soumission
+
+- La plateforme attend bien du **0/1 binaire**
+- L'ancienne soumission `submission_lgbm_optuna.csv` contenait des **probas continues** (erreur)
+
+---
+
+## 6. Clean Pipeline — Version Finale
+
+### 6.1 Modifications (`clean_pipeline.py`)
+
+Pipeline nettoyé :
+
+- **5 generators** : RawFeature, RollingStats, Momentum, VolatilityRatio, ShortTermInteraction
+- **Pas de** InteractionGenerator (redondant)
+- **Pas de** GroupedFeatureGenerator (leaky)
+- Drift threshold **0.60**
+- Optuna 30 trials avec **Purged KFold** sur **full dataset** (527K)
+- Seuil calibré pour ~50% de prédictions positives
+
+### 6.2 Résultats
+
+| Métrique | Valeur |
+|----------|--------|
+| Features avant sélection | 77 |
+| AUC adversariale | 0.5801 (pas de drift) |
+| Features après sélection | 76 |
+| **Purged CV accuracy (3-fold)** | **0.5246** |
+| **Purged CV accuracy (5-fold)** | **0.5247 ± 0.0027** |
+| Train-val gap | 0.9% |
+| Positive ratio submission | 50.7% |
+
+**Best params (trial #21)** : `n_estimators=327, learning_rate=0.0073, num_leaves=13, max_depth=8, min_child_samples=145, subsample=0.624, colsample_bytree=0.647, reg_alpha=0.227, reg_lambda=0.657, min_split_gain=0.905`
+
+### 6.3 Soumission Finale
+
+- Fichier : `submission_clean_purged.csv`
+- Score plateforme : **0.5082**
+
+---
+
+## 7. Bilan & Observations
+
+### Scores Plateforme
+
+| Soumission | Positive Ratio | Score |
+|------------|:-:|:-:|
+| `submission_lgbm_purged_antioverfit.csv` (61% pos) | 61.2% | 0.5082 |
+| `submission_lgbm_purged_calibrated.csv` (50.7% pos) | 50.7% | 0.5082 |
+| `submission_clean_purged.csv` (50.7% pos, clean pipeline) | 50.7% | 0.5082 |
+
+**Le score ne bouge pas** malgré des changements significatifs de pipeline et de distribution des prédictions. Cela suggère que :
+
+1. Le signal prédictif dans les données est extrêmement faible
+2. Différentes approches convergent vers le même résultat
+3. Le modèle pourrait prédire essentiellement la même chose avec des variations mineures
+
+### Ce Qui a Marché
+
+- ✅ **Purged KFold** : Identifié 2.4% de leakage temporel dans le Standard KFold
+- ✅ **Anti-overfit Optuna** : Réduit le gap train-val de 25% à 1%
+- ✅ **Audit pipeline** : Identifié le GroupedFeatureGenerator leaky et InteractionGenerator redondant
+
+### Ce Qui n'a Pas Marché (en termes de score)
+
+- ❌ Régression au lieu de classification
+- ❌ Stacking Regressor + Classifier
+- ❌ Nouvelles features (skew, kurt, sign flips, volume flow, cross-correlations, allocation)
+- ❌ Tous les changements de pipeline n'ont pas amélioré le score plateforme
+
+### Pistes Restantes
+
+1. **Vérifier la métrique exacte** de la plateforme (accuracy? AUC? autre?)
+2. **Tester d'autres architectures** : XGBoost, CatBoost, TabNet
+3. **Pousser Optuna plus agressivement** : 100+ trials
+4. **Feature engineering radicalement différent** : PCA, autoencoders
+5. **Analyser le test set** : la distribution peut être fondamentalement différente du train
