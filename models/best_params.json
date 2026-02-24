@@ -1,0 +1,35 @@
+{
+  "lgbm": {
+    "objective": "binary",
+    "verbosity": -1,
+    "boosting_type": "gbdt",
+    "n_estimators": 258,
+    "learning_rate": 0.008217026556199275,
+    "num_leaves": 29,
+    "max_depth": 7,
+    "min_child_samples": 108,
+    "subsample": 0.6070300501614984,
+    "colsample_bytree": 0.30985950229003156,
+    "bagging_freq": 4,
+    "reg_alpha": 0.1448322683470355,
+    "reg_lambda": 9.695129279672335,
+    "min_split_gain": 1.5387420395409699,
+    "path_smooth": 2.511194418285826
+  },
+  "xgb": {
+    "objective": "binary:logistic",
+    "eval_metric": "logloss",
+    "verbosity": 0,
+    "n_estimators": 513,
+    "learning_rate": 0.005344132196309563,
+    "max_depth": 5,
+    "min_child_weight": 60,
+    "gamma": 3.244198836221166,
+    "max_delta_step": 5,
+    "subsample": 0.6380549794383925,
+    "colsample_bytree": 0.4055778764905851,
+    "colsample_bylevel": 0.6950467824859545,
+    "reg_alpha": 0.09927636876729332,
+    "reg_lambda": 3.0276198791610587
+  }
+}
