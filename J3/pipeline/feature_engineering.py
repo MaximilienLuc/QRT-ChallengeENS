@@ -50,7 +50,7 @@ class RollingStatFeatureGenerator(FeatureGenerator):
 
 class MomentumGenerator(FeatureGenerator):
     """Generates momentum features (short vs long term trends)."""
-    def __init__(self, windows=[(1, 5), (1, 20), (5, 20)]):
+    def __init__(self, windows=[(1, 5), (1, 10), (1, 20), (5, 20)]):
         """
         windows: list of tuples (short, long) to compare.
         """
@@ -83,7 +83,7 @@ class MomentumGenerator(FeatureGenerator):
 
 class VolatilityRatioGenerator(FeatureGenerator):
     """Generates volatility ratios (short term vol / long term vol)."""
-    def __init__(self, windows=[(5, 20)]):
+    def __init__(self, windows=[(5, 10), (5, 20)]):
         self.windows = windows
 
     def transform(self, X):
@@ -105,6 +105,19 @@ class VolatilityRatioGenerator(FeatureGenerator):
                  if 'RET_1' in X.columns:
                      X_new[f'SHARPE_PROXY_{long}'] = X['RET_1'] / (std_long + 1e-9)
 
+        return X_new
+
+class ReturnDifferenceGenerator(FeatureGenerator):
+    """Generates the difference between lagging returns (acceleration/deceleration)."""
+    def __init__(self, lags=[(1, 5), (1, 10), (1, 20), (5, 10), (5, 20)]):
+        self.lags = lags
+
+    def transform(self, X):
+        X_new = pd.DataFrame(index=X.index)
+        for l1, l2 in self.lags:
+            c1, c2 = f'RET_{l1}', f'RET_{l2}'
+            if c1 in X.columns and c2 in X.columns:
+                X_new[f'RET_DIFF_{l1}_{l2}'] = X[c1] - X[c2]
         return X_new
 
 class GroupedFeatureGenerator(FeatureGenerator):
